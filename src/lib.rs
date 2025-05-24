@@ -729,9 +729,8 @@ impl Machine {
 
     pub fn run(&mut self) {
         while let Some(pid) = self.run_queue.pop_front() {
-            let proc_rc = match self.processes.get(&pid) {
-                Some(p) => Rc::clone(p),
-                None => continue,
+            let Some(proc_rc) = self.processes.get(&pid).cloned() else {
+                continue;
             };
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -766,7 +765,10 @@ impl Machine {
                     ProcessState::Running => {
                         self.run_queue.push_back(pid);
                     }
-                    ProcessState::Halted | ProcessState::Waiting => {}
+                    ProcessState::Waiting => {}
+                    ProcessState::Halted => {
+                        self.processes.remove(&pid);
+                    }
                     ProcessState::Crashed => println!("[PID {}] Crashed", pid),
                 },
                 Err(_) => {
