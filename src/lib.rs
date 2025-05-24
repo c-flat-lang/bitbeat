@@ -1,7 +1,7 @@
 pub mod decoder;
 use anyhow::Result;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -18,9 +18,9 @@ pub struct Addr(pub usize);
 
 struct HandlerOptions<'a> {
     proc: &'a mut Process,
-    process_table: &'a mut HashMap<Pid, Rc<RefCell<Process>>>,
+    process_table: &'a mut BTreeMap<Pid, Rc<RefCell<Process>>>,
     run_queue: &'a mut VecDeque<Pid>,
-    modules: &'a HashMap<String, Module>,
+    modules: &'a BTreeMap<String, Module>,
     next_pid: &'a mut usize,
 }
 
@@ -62,7 +62,7 @@ fn handle_load_imm(ho: HandlerOptions) -> Option<Process> {
         return None;
     };
 
-    ho.proc.regs[dst as usize] = value;
+    ho.proc.regs[dst] = value;
     None
 }
 
@@ -81,7 +81,7 @@ fn handle_add(ho: HandlerOptions) -> Option<Process> {
         return None;
     };
 
-    ho.proc.regs[dst as usize] = ho.proc.regs[lhs as usize] + ho.proc.regs[rhs as usize];
+    ho.proc.regs[dst] = ho.proc.regs[lhs] + ho.proc.regs[rhs];
     None
 }
 
@@ -100,7 +100,7 @@ fn handle_sub(ho: HandlerOptions) -> Option<Process> {
         return None;
     };
 
-    ho.proc.regs[dst as usize] = ho.proc.regs[lhs as usize] - ho.proc.regs[rhs as usize];
+    ho.proc.regs[dst] = ho.proc.regs[lhs] - ho.proc.regs[rhs];
     None
 }
 
@@ -119,7 +119,7 @@ fn handle_cmp_le(ho: HandlerOptions) -> Option<Process> {
         return None;
     };
 
-    ho.proc.regs[dst as usize] = (ho.proc.regs[lhs as usize] <= ho.proc.regs[rhs as usize]) as i64;
+    ho.proc.regs[dst] = (ho.proc.regs[lhs] <= ho.proc.regs[rhs]) as i64;
     None
 }
 
@@ -134,7 +134,7 @@ fn handle_jump_if(ho: HandlerOptions) -> Option<Process> {
         return None;
     };
 
-    if ho.proc.regs[cmp as usize] != 0 {
+    if ho.proc.regs[cmp] != 0 {
         ho.proc.ip = target as usize;
     }
     None
@@ -173,7 +173,7 @@ fn handle_spawn(ho: HandlerOptions) -> Option<Process> {
         args.insert(0, ho.proc.pid as Word);
     }
     let new_proc = Process::new(new_pid, Arc::clone(function), &args);
-    ho.proc.regs[dst as usize] = new_pid as i64;
+    ho.proc.regs[dst] = new_pid as i64;
 
     Some(new_proc)
 }
@@ -184,7 +184,7 @@ fn handle_print(ho: HandlerOptions) -> Option<Process> {
         ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    println!("{}", ho.proc.regs[arg as usize]);
+    println!("{}", ho.proc.regs[arg]);
     None
 }
 
@@ -197,7 +197,7 @@ fn handle_recv(ho: HandlerOptions) -> Option<Process> {
     };
 
     if let Some(msg) = ho.proc.mailbox.pop_front() {
-        ho.proc.regs[dst as usize] = msg;
+        ho.proc.regs[dst] = msg;
         ho.proc.state = ProcessState::Running;
     } else {
         ho.proc.ip = start - 1;
@@ -217,10 +217,10 @@ fn handle_send(ho: HandlerOptions) -> Option<Process> {
         ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let pid = ho.proc.regs[dst_pid as usize] as Pid;
+    let pid = ho.proc.regs[dst_pid] as Pid;
     if let Some(dst_proc) = ho.process_table.get_mut(&pid) {
         let mut p = dst_proc.borrow_mut();
-        p.mailbox.push_back(ho.proc.regs[src_reg as usize]);
+        p.mailbox.push_back(ho.proc.regs[src_reg]);
         ho.run_queue.push_back(pid);
     }
     None
@@ -353,7 +353,7 @@ pub struct InstructionBuilder<'a> {
 impl Drop for InstructionBuilder<'_> {
     fn drop(&mut self) {
         let instructions = std::mem::take(&mut self.instructions);
-        let mut labels = std::collections::HashMap::new();
+        let mut labels = std::collections::BTreeMap::new();
         let mut backpatch = Vec::new();
         for instruction in instructions {
             if let Instruction::Label { name } = instruction {
@@ -477,14 +477,14 @@ enum ProcessState {
 #[derive(Debug)]
 pub struct Module {
     name: String,
-    functions: HashMap<String, Arc<Function>>,
+    functions: BTreeMap<String, Arc<Function>>,
 }
 
 impl Module {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            functions: HashMap::new(),
+            functions: BTreeMap::new(),
         }
     }
 
@@ -560,9 +560,9 @@ impl Process {
 
     fn step(
         &mut self,
-        process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
+        process_table: &mut BTreeMap<Pid, Rc<RefCell<Process>>>,
         run_queue: &mut VecDeque<Pid>,
-        modules: &HashMap<String, Module>,
+        modules: &BTreeMap<String, Module>,
         next_pid: &mut usize,
     ) -> Option<Process> {
         if self.ip >= self.function.code.len()
@@ -591,13 +591,13 @@ impl Process {
     }
 
     #[inline(always)]
-    fn reg(&mut self) -> Result<u8> {
+    fn reg(&mut self) -> Result<usize> {
         if self.ip >= self.function.code.len() {
             anyhow::bail!("UnexpectedEOF".to_string());
         }
         let ip = self.ip;
         self.ip += 1;
-        Ok(self.function.code[ip])
+        Ok(self.function.code[ip] as usize)
     }
 
     #[inline(always)]
@@ -645,9 +645,9 @@ impl Process {
 #[derive(Debug, Default)]
 pub struct Machine {
     next_pid: usize,
-    modules: HashMap<String, Module>,
-    processes: HashMap<Pid, Rc<RefCell<Process>>>,
-    waiting: HashMap<Pid, Rc<RefCell<Process>>>,
+    modules: BTreeMap<String, Module>,
+    processes: BTreeMap<Pid, Rc<RefCell<Process>>>,
+    waiting: BTreeMap<Pid, Rc<RefCell<Process>>>,
     run_queue: VecDeque<Pid>,
 }
 
