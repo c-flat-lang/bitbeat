@@ -53,6 +53,6 @@ fn main() {
 
     let start = std::time::Instant::now();
     machine.run();
-    let seconds = start.elapsed().as_secs();
+    let seconds = start.elapsed().as_secs_f32();
     println!("Done in {}", seconds);
 }

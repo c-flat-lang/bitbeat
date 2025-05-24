@@ -16,12 +16,15 @@ pub struct Reg(pub usize);
 #[derive(Clone, Copy, Debug)]
 pub struct Addr(pub usize);
 
-type OpHandler = fn(
-    &mut Process,
-    &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    &HashMap<String, Module>,
-    &mut usize,
-) -> Option<Process>;
+struct HandlerOptions<'a> {
+    proc: &'a mut Process,
+    process_table: &'a mut HashMap<Pid, Rc<RefCell<Process>>>,
+    run_queue: &'a mut VecDeque<Pid>,
+    modules: &'a HashMap<String, Module>,
+    next_pid: &'a mut usize,
+}
+
+type OpHandler = fn(ho: HandlerOptions) -> Option<Process>;
 
 static DISPATCH_TABLE: &[OpHandler] = &[
     handle_noop,
@@ -38,241 +41,187 @@ static DISPATCH_TABLE: &[OpHandler] = &[
 ];
 
 #[inline(always)]
-fn handle_noop(
-    _proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
+fn handle_noop(_ho: HandlerOptions) -> Option<Process> {
     None
 }
 
 #[inline(always)]
-fn handle_halt(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    proc.state = ProcessState::Halted;
+fn handle_halt(ho: HandlerOptions) -> Option<Process> {
+    ho.proc.state = ProcessState::Halted;
     None
 }
 
 #[inline(always)]
-fn handle_load_imm(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(dst) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_load_imm(ho: HandlerOptions) -> Option<Process> {
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(value) = proc.imm_i64() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(value) = ho.proc.imm_i64() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
 
-    proc.regs[dst as usize] = value;
+    ho.proc.regs[dst as usize] = value;
     None
 }
 
 #[inline(always)]
-fn handle_add(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(dst) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_add(ho: HandlerOptions) -> Option<Process> {
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(lhs) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(lhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(rhs) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(rhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
 
-    proc.regs[dst as usize] = proc.regs[lhs as usize] + proc.regs[rhs as usize];
+    ho.proc.regs[dst as usize] = ho.proc.regs[lhs as usize] + ho.proc.regs[rhs as usize];
     None
 }
 
 #[inline(always)]
-fn handle_sub(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(dst) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_sub(ho: HandlerOptions) -> Option<Process> {
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(lhs) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(lhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(rhs) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(rhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
 
-    proc.regs[dst as usize] = proc.regs[lhs as usize] - proc.regs[rhs as usize];
+    ho.proc.regs[dst as usize] = ho.proc.regs[lhs as usize] - ho.proc.regs[rhs as usize];
     None
 }
 
 #[inline(always)]
-fn handle_cmp_le(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(dst) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_cmp_le(ho: HandlerOptions) -> Option<Process> {
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(lhs) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(lhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(rhs) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(rhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
 
-    proc.regs[dst as usize] = (proc.regs[lhs as usize] <= proc.regs[rhs as usize]) as i64;
+    ho.proc.regs[dst as usize] = (ho.proc.regs[lhs as usize] <= ho.proc.regs[rhs as usize]) as i64;
     None
 }
 
 #[inline(always)]
-fn handle_jump_if(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(cmp) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_jump_if(ho: HandlerOptions) -> Option<Process> {
+    let Ok(cmp) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(target) = proc.imm_u32() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(target) = ho.proc.imm_u32() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
 
-    if proc.regs[cmp as usize] != 0 {
-        proc.ip = target as usize;
+    if ho.proc.regs[cmp as usize] != 0 {
+        ho.proc.ip = target as usize;
     }
     None
 }
 
 #[inline(always)]
-fn handle_spawn(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    modules: &HashMap<String, Module>,
-    next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(module_name) = proc.string() else {
-        proc.state = ProcessState::Crashed;
+fn handle_spawn(ho: HandlerOptions) -> Option<Process> {
+    let Ok(module_name) = ho.proc.string() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(function_name) = proc.string() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(function_name) = ho.proc.string() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(args) = proc.args() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(args) = ho.proc.args() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(dst) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Some(module) = modules.get(module_name.as_str()) else {
-        proc.state = ProcessState::Crashed;
+    let Some(module) = ho.modules.get(module_name.as_str()) else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
     let Some(function) = module.functions.get(function_name.as_str()) else {
-        proc.state = ProcessState::Crashed;
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let new_pid = *next_pid;
-    *next_pid += 1;
-    let mut args: Vec<Word> = args.iter().map(|&arg| proc.regs[arg as usize]).collect();
+    let new_pid = *ho.next_pid;
+    *ho.next_pid += 1;
+    let mut args: Vec<Word> = args.iter().map(|&arg| ho.proc.regs[arg as usize]).collect();
     if function.returns {
-        args.insert(0, proc.pid as Word);
+        args.insert(0, ho.proc.pid as Word);
     }
     let new_proc = Process::new(new_pid, Arc::clone(function), &args);
-    proc.regs[dst as usize] = new_pid as i64;
+    ho.proc.regs[dst as usize] = new_pid as i64;
 
     Some(new_proc)
 }
 
 #[inline(always)]
-fn handle_print(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(arg) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_print(ho: HandlerOptions) -> Option<Process> {
+    let Ok(arg) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    println!("{}", proc.regs[arg as usize]);
+    println!("{}", ho.proc.regs[arg as usize]);
     None
 }
 
 #[inline(always)]
-fn handle_recv(
-    proc: &mut Process,
-    _process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let start = proc.ip;
-    let Ok(dst) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_recv(ho: HandlerOptions) -> Option<Process> {
+    let start = ho.proc.ip;
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
 
-    if let Some(msg) = proc.mailbox.pop_front() {
-        proc.regs[dst as usize] = msg;
-        proc.state = ProcessState::Running;
+    if let Some(msg) = ho.proc.mailbox.pop_front() {
+        ho.proc.regs[dst as usize] = msg;
+        ho.proc.state = ProcessState::Running;
     } else {
-        proc.ip = start - 1;
-        proc.state = ProcessState::Waiting;
+        ho.proc.ip = start - 1;
+        ho.proc.state = ProcessState::Waiting;
         return None;
     }
     None
 }
 
 #[inline(always)]
-fn handle_send(
-    proc: &mut Process,
-    process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
-    _modules: &HashMap<String, Module>,
-    _next_pid: &mut usize,
-) -> Option<Process> {
-    let Ok(dst_pid) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+fn handle_send(ho: HandlerOptions) -> Option<Process> {
+    let Ok(dst_pid) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let Ok(src_reg) = proc.reg() else {
-        proc.state = ProcessState::Crashed;
+    let Ok(src_reg) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
         return None;
     };
-    let pid = proc.regs[dst_pid as usize] as Pid;
-    if let Some(dst_proc) = process_table.get_mut(&pid) {
+    let pid = ho.proc.regs[dst_pid as usize] as Pid;
+    if let Some(dst_proc) = ho.process_table.get_mut(&pid) {
         let mut p = dst_proc.borrow_mut();
-        p.mailbox.push_back(proc.regs[src_reg as usize]);
+        p.mailbox.push_back(ho.proc.regs[src_reg as usize]);
+        ho.run_queue.push_back(pid);
     }
     None
 }
@@ -612,6 +561,7 @@ impl Process {
     fn step(
         &mut self,
         process_table: &mut HashMap<Pid, Rc<RefCell<Process>>>,
+        run_queue: &mut VecDeque<Pid>,
         modules: &HashMap<String, Module>,
         next_pid: &mut usize,
     ) -> Option<Process> {
@@ -623,7 +573,14 @@ impl Process {
         }
 
         let opcode = self.opcode();
-        DISPATCH_TABLE[opcode](self, process_table, modules, next_pid)
+        let ho = HandlerOptions {
+            proc: self,
+            process_table,
+            run_queue,
+            modules,
+            next_pid,
+        };
+        DISPATCH_TABLE[opcode](ho)
     }
 
     #[inline(always)]
@@ -690,6 +647,7 @@ pub struct Machine {
     next_pid: usize,
     modules: HashMap<String, Module>,
     processes: HashMap<Pid, Rc<RefCell<Process>>>,
+    waiting: HashMap<Pid, Rc<RefCell<Process>>>,
     run_queue: VecDeque<Pid>,
 }
 
@@ -725,9 +683,12 @@ impl Machine {
             let still_running = {
                 let mut proc = proc_rc.borrow_mut();
 
-                if let Some(new_proc) =
-                    proc.step(&mut self.processes, &self.modules, &mut self.next_pid)
-                {
+                if let Some(new_proc) = proc.step(
+                    &mut self.processes,
+                    &mut self.run_queue,
+                    &self.modules,
+                    &mut self.next_pid,
+                ) {
                     let new_pid = new_proc.pid;
                     self.processes
                         .insert(new_pid, Rc::new(RefCell::new(new_proc)));
@@ -755,6 +716,17 @@ impl Machine {
         }
     }
 
+    pub fn wake_if_ready(&mut self, pid: Pid) {
+        if let Some(proc_rc) = self.waiting.remove(&pid) {
+            if !proc_rc.borrow().mailbox.is_empty() {
+                self.processes.insert(pid, Rc::clone(&proc_rc));
+                self.run_queue.push_back(pid);
+            } else {
+                self.waiting.insert(pid, proc_rc);
+            }
+        }
+    }
+
     pub fn run(&mut self) {
         while let Some(pid) = self.run_queue.pop_front() {
             let proc_rc = match self.processes.get(&pid) {
@@ -766,9 +738,12 @@ impl Machine {
                 let mut proc = proc_rc.borrow_mut();
 
                 loop {
-                    if let Some(new_proc) =
-                        proc.step(&mut self.processes, &self.modules, &mut self.next_pid)
-                    {
+                    if let Some(new_proc) = proc.step(
+                        &mut self.processes,
+                        &mut self.run_queue,
+                        &self.modules,
+                        &mut self.next_pid,
+                    ) {
                         let new_pid = new_proc.pid;
                         self.processes
                             .insert(new_pid, Rc::new(RefCell::new(new_proc)));
@@ -788,10 +763,10 @@ impl Machine {
 
             match result {
                 Ok(_) => match proc.state {
-                    ProcessState::Running | ProcessState::Waiting => {
+                    ProcessState::Running => {
                         self.run_queue.push_back(pid);
                     }
-                    ProcessState::Halted => {}
+                    ProcessState::Halted | ProcessState::Waiting => {}
                     ProcessState::Crashed => println!("[PID {}] Crashed", pid),
                 },
                 Err(_) => {
