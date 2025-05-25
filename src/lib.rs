@@ -24,7 +24,7 @@ struct HandlerOptions<'a> {
     next_pid: &'a mut usize,
 }
 
-type OpHandler = fn(ho: HandlerOptions) -> Option<Process>;
+type OpHandler = fn(ho: HandlerOptions);
 
 static DISPATCH_TABLE: &[OpHandler] = &[
     handle_noop,
@@ -32,6 +32,7 @@ static DISPATCH_TABLE: &[OpHandler] = &[
     handle_load_imm,
     handle_add,
     handle_sub,
+    handle_mul,
     handle_cmp_le,
     handle_jump_if,
     handle_spawn,
@@ -41,130 +42,140 @@ static DISPATCH_TABLE: &[OpHandler] = &[
 ];
 
 #[inline(always)]
-fn handle_noop(_ho: HandlerOptions) -> Option<Process> {
-    None
-}
+fn handle_noop(_ho: HandlerOptions) {}
 
 #[inline(always)]
-fn handle_halt(ho: HandlerOptions) -> Option<Process> {
+fn handle_halt(ho: HandlerOptions) {
     ho.proc.state = ProcessState::Halted;
-    None
 }
 
 #[inline(always)]
-fn handle_load_imm(ho: HandlerOptions) -> Option<Process> {
+fn handle_load_imm(ho: HandlerOptions) {
     let Ok(dst) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(value) = ho.proc.imm_i64() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
 
     ho.proc.regs[dst] = value;
-    None
 }
 
 #[inline(always)]
-fn handle_add(ho: HandlerOptions) -> Option<Process> {
+fn handle_add(ho: HandlerOptions) {
     let Ok(dst) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(lhs) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(rhs) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
 
     ho.proc.regs[dst] = ho.proc.regs[lhs] + ho.proc.regs[rhs];
-    None
 }
 
 #[inline(always)]
-fn handle_sub(ho: HandlerOptions) -> Option<Process> {
+fn handle_sub(ho: HandlerOptions) {
     let Ok(dst) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(lhs) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(rhs) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
 
     ho.proc.regs[dst] = ho.proc.regs[lhs] - ho.proc.regs[rhs];
-    None
 }
 
 #[inline(always)]
-fn handle_cmp_le(ho: HandlerOptions) -> Option<Process> {
+fn handle_mul(ho: HandlerOptions) {
     let Ok(dst) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(lhs) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(rhs) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
 
-    ho.proc.regs[dst] = (ho.proc.regs[lhs] <= ho.proc.regs[rhs]) as i64;
-    None
+    ho.proc.regs[dst] = ho.proc.regs[lhs] * ho.proc.regs[rhs];
 }
 
 #[inline(always)]
-fn handle_jump_if(ho: HandlerOptions) -> Option<Process> {
+fn handle_cmp_le(ho: HandlerOptions) {
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
+        return;
+    };
+    let Ok(lhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
+        return;
+    };
+    let Ok(rhs) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
+        return;
+    };
+
+    ho.proc.regs[dst] = (ho.proc.regs[lhs] <= ho.proc.regs[rhs]) as i64;
+}
+
+#[inline(always)]
+fn handle_jump_if(ho: HandlerOptions) {
     let Ok(cmp) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(target) = ho.proc.imm_u32() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
 
     if ho.proc.regs[cmp] != 0 {
         ho.proc.ip = target as usize;
     }
-    None
 }
 
 #[inline(always)]
-fn handle_spawn(ho: HandlerOptions) -> Option<Process> {
+fn handle_spawn(ho: HandlerOptions) {
     let Ok(module_name) = ho.proc.string() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(function_name) = ho.proc.string() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(args) = ho.proc.args() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(dst) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Some(module) = ho.modules.get(module_name.as_str()) else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Some(function) = module.functions.get(function_name.as_str()) else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let new_pid = *ho.next_pid;
     *ho.next_pid += 1;
@@ -175,47 +186,48 @@ fn handle_spawn(ho: HandlerOptions) -> Option<Process> {
     let new_proc = Process::new(new_pid, Arc::clone(function), &args);
     ho.proc.regs[dst] = new_pid as i64;
 
-    Some(new_proc)
+    let new_pid = new_proc.pid;
+    ho.process_table
+        .insert(new_pid, Rc::new(RefCell::new(new_proc)));
+    ho.run_queue.push_back(new_pid);
 }
 
 #[inline(always)]
-fn handle_print(ho: HandlerOptions) -> Option<Process> {
+fn handle_print(ho: HandlerOptions) {
     let Ok(arg) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     println!("{}", ho.proc.regs[arg]);
-    None
 }
 
 #[inline(always)]
-fn handle_recv(ho: HandlerOptions) -> Option<Process> {
+fn handle_recv(ho: HandlerOptions) {
     let start = ho.proc.ip;
     let Ok(dst) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
 
-    if let Some(msg) = ho.proc.mailbox.pop_front() {
-        ho.proc.regs[dst] = msg;
-        ho.proc.state = ProcessState::Running;
-    } else {
+    let Some(msg) = ho.proc.mailbox.pop_front() else {
         ho.proc.ip = start - 1;
         ho.proc.state = ProcessState::Waiting;
-        return None;
-    }
-    None
+        return;
+    };
+
+    ho.proc.regs[dst] = msg;
+    ho.proc.state = ProcessState::Running;
 }
 
 #[inline(always)]
-fn handle_send(ho: HandlerOptions) -> Option<Process> {
+fn handle_send(ho: HandlerOptions) {
     let Ok(dst_pid) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let Ok(src_reg) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
-        return None;
+        return;
     };
     let pid = ho.proc.regs[dst_pid] as Pid;
     if let Some(dst_proc) = ho.process_table.get_mut(&pid) {
@@ -223,7 +235,6 @@ fn handle_send(ho: HandlerOptions) -> Option<Process> {
         p.mailbox.push_back(ho.proc.regs[src_reg]);
         ho.run_queue.push_back(pid);
     }
-    None
 }
 
 #[derive(Clone, Debug)]
@@ -240,6 +251,11 @@ pub enum Instruction {
         rhs: Reg,
     },
     Sub {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Mul {
         dst: Reg,
         lhs: Reg,
         rhs: Reg,
@@ -282,12 +298,13 @@ impl Instruction {
             Instruction::LoadImm { .. } => 2,
             Instruction::Add { .. } => 3,
             Instruction::Sub { .. } => 4,
-            Instruction::CmpLE { .. } => 5,
-            Instruction::JumpIf { .. } => 6,
-            Instruction::Spawn { .. } => 7,
-            Instruction::Print { .. } => 8,
-            Instruction::Send { .. } => 9,
-            Instruction::Recv { .. } => 10,
+            Instruction::Mul { .. } => 5,
+            Instruction::CmpLE { .. } => 6,
+            Instruction::JumpIf { .. } => 7,
+            Instruction::Spawn { .. } => 8,
+            Instruction::Print { .. } => 9,
+            Instruction::Send { .. } => 10,
+            Instruction::Recv { .. } => 11,
             Instruction::Label { .. } => panic!("Label has no opcode"),
         }
     }
@@ -303,6 +320,7 @@ impl Instruction {
             }
             Instruction::Add { dst, lhs, rhs }
             | Instruction::Sub { dst, lhs, rhs }
+            | Instruction::Mul { dst, lhs, rhs }
             | Instruction::CmpLE { dst, lhs, rhs } => {
                 bytes.push(dst.0 as u8);
                 bytes.push(lhs.0 as u8);
@@ -408,6 +426,11 @@ impl<'a> InstructionBuilder<'a> {
 
     pub fn sub(&mut self, dst: Reg, lhs: Reg, rhs: Reg) -> &mut Self {
         self.instructions.push(Instruction::Sub { dst, lhs, rhs });
+        self
+    }
+
+    pub fn mul(&mut self, dst: Reg, lhs: Reg, rhs: Reg) -> &mut Self {
+        self.instructions.push(Instruction::Mul { dst, lhs, rhs });
         self
     }
 
@@ -564,12 +587,12 @@ impl Process {
         run_queue: &mut VecDeque<Pid>,
         modules: &BTreeMap<String, Module>,
         next_pid: &mut usize,
-    ) -> Option<Process> {
+    ) {
         if self.ip >= self.function.code.len()
             || matches!(self.state, ProcessState::Halted | ProcessState::Crashed)
         {
             self.state = ProcessState::Halted;
-            return None;
+            return;
         }
 
         let opcode = self.opcode();
@@ -580,7 +603,7 @@ impl Process {
             modules,
             next_pid,
         };
-        DISPATCH_TABLE[opcode](ho)
+        DISPATCH_TABLE[opcode](ho);
     }
 
     #[inline(always)]
@@ -675,32 +698,24 @@ impl Machine {
     }
 
     pub fn step(&mut self) {
-        if let Some(pid) = self.run_queue.pop_front() {
-            let Some(proc_rc) = self.processes.get(&pid).cloned() else {
-                return;
-            };
+        let Some(pid) = self.run_queue.pop_front() else {
+            return;
+        };
+        let Some(proc_rc) = self.processes.get(&pid).cloned() else {
+            return;
+        };
 
-            let still_running = {
-                let mut proc = proc_rc.borrow_mut();
+        let mut proc = proc_rc.borrow_mut();
 
-                if let Some(new_proc) = proc.step(
-                    &mut self.processes,
-                    &mut self.run_queue,
-                    &self.modules,
-                    &mut self.next_pid,
-                ) {
-                    let new_pid = new_proc.pid;
-                    self.processes
-                        .insert(new_pid, Rc::new(RefCell::new(new_proc)));
-                    self.run_queue.push_back(new_pid);
-                }
+        proc.step(
+            &mut self.processes,
+            &mut self.run_queue,
+            &self.modules,
+            &mut self.next_pid,
+        );
 
-                matches!(proc.state, ProcessState::Running)
-            };
-
-            if still_running {
-                self.run_queue.push_back(pid);
-            }
+        if proc.state == ProcessState::Running {
+            self.run_queue.push_back(pid);
         }
     }
 
@@ -733,48 +748,30 @@ impl Machine {
                 continue;
             };
 
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut proc = proc_rc.borrow_mut();
-
-                loop {
-                    if let Some(new_proc) = proc.step(
-                        &mut self.processes,
-                        &mut self.run_queue,
-                        &self.modules,
-                        &mut self.next_pid,
-                    ) {
-                        let new_pid = new_proc.pid;
-                        self.processes
-                            .insert(new_pid, Rc::new(RefCell::new(new_proc)));
-                        self.run_queue.push_back(new_pid);
-                    }
-
-                    if matches!(
-                        proc.state,
-                        ProcessState::Halted | ProcessState::Crashed | ProcessState::Waiting
-                    ) {
-                        break;
-                    }
-                }
-            }));
-
             let mut proc = proc_rc.borrow_mut();
 
-            match result {
-                Ok(_) => match proc.state {
-                    ProcessState::Running => {
-                        self.run_queue.push_back(pid);
-                    }
-                    ProcessState::Waiting => {}
-                    ProcessState::Halted => {
-                        self.processes.remove(&pid);
-                    }
-                    ProcessState::Crashed => println!("[PID {}] Crashed", pid),
-                },
-                Err(_) => {
-                    println!("[PID {}] Panicked!", pid);
-                    proc.state = ProcessState::Crashed;
+            loop {
+                proc.step(
+                    &mut self.processes,
+                    &mut self.run_queue,
+                    &self.modules,
+                    &mut self.next_pid,
+                );
+
+                if proc.state != ProcessState::Running {
+                    break;
                 }
+            }
+
+            match proc.state {
+                ProcessState::Running => {
+                    self.run_queue.push_back(pid);
+                }
+                ProcessState::Halted => {
+                    self.processes.remove(&pid);
+                }
+                ProcessState::Crashed => println!("[PID {}] Crashed", pid),
+                _ => {}
             }
         }
     }

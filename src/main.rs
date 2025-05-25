@@ -1,6 +1,7 @@
 use bitbeat::{Function, Machine, Module, Reg};
 
-fn main() {
+#[inline(always)]
+fn _fib() {
     let mut machine = Machine::default();
 
     let mut module = Module::new("main");
@@ -40,7 +41,7 @@ fn main() {
     let mut main_function = Function::new("main");
     main_function
         .instructions()
-        .load_imm(Reg(0), 30) // N = 10
+        .load_imm(Reg(0), 30) // N = 30
         .spawn("main", "fib", vec![Reg(0)], Reg(1)) // pid = spawn fib(N)
         .recv(Reg(2)) // recv result
         .print(Reg(2)) // print result
@@ -55,4 +56,70 @@ fn main() {
     machine.run();
     let seconds = start.elapsed().as_secs_f32();
     println!("Done in {}", seconds);
+}
+
+#[inline(always)]
+fn _matrix() {
+    let mut machine = Machine::default();
+    let mut module = Module::new("main");
+
+    // Function to do matrix multiply (no spawn/recv needed)
+    let mut matmul = Function::new("matmul");
+    matmul
+        .instructions()
+        // Load matrix A
+        .load_imm(Reg(1), 1) // A[0][0]
+        .load_imm(Reg(2), 2) // A[0][1]
+        .load_imm(Reg(3), 3) // A[1][0]
+        .load_imm(Reg(4), 4) // A[1][1]
+        // Load matrix B
+        .load_imm(Reg(5), 5) // B[0][0]
+        .load_imm(Reg(6), 6) // B[0][1]
+        .load_imm(Reg(7), 7) // B[1][0]
+        .load_imm(Reg(8), 8) // B[1][1]
+        // Compute C[0][0] = A[0][0] * B[0][0] + A[0][1] * B[1][0]
+        .mul(Reg(9), Reg(1), Reg(5)) // A[0][0] * B[0][0]
+        .mul(Reg(10), Reg(2), Reg(7)) // A[0][1] * B[1][0]
+        .add(Reg(13), Reg(9), Reg(10)) // C[0][0]
+        // Compute C[0][1] = A[0][0] * B[0][1] + A[0][1] * B[1][1]
+        .mul(Reg(11), Reg(1), Reg(6)) // A[0][0] * B[0][1]
+        .mul(Reg(12), Reg(2), Reg(8)) // A[0][1] * B[1][1]
+        .add(Reg(14), Reg(11), Reg(12)) // C[0][1]
+        // Compute C[1][0] = A[1][0] * B[0][0] + A[1][1] * B[1][0]
+        .mul(Reg(9), Reg(3), Reg(5))
+        .mul(Reg(10), Reg(4), Reg(7))
+        .add(Reg(15), Reg(9), Reg(10))
+        // Compute C[1][1] = A[1][0] * B[0][1] + A[1][1] * B[1][1]
+        .mul(Reg(11), Reg(3), Reg(6))
+        .mul(Reg(12), Reg(4), Reg(8))
+        .add(Reg(16), Reg(11), Reg(12))
+        // Print results
+        .print(Reg(13)) // C[0][0]
+        .print(Reg(14)) // C[0][1]
+        .print(Reg(15)) // C[1][0]
+        .print(Reg(16)) // C[1][1]
+        .halt();
+
+    module.add_function(matmul);
+
+    // Entry: call matmul directly
+    let mut main = Function::new("main");
+    main.instructions()
+        .spawn("main", "matmul", vec![], Reg(0))
+        .recv(Reg(1))
+        .halt();
+
+    module.add_function(main);
+    machine.register_module(module);
+    machine.spawn("main", "main", &[]);
+
+    let start = std::time::Instant::now();
+    machine.run();
+    let seconds = start.elapsed().as_secs_f32();
+    println!("Done in {}s", seconds);
+}
+
+fn main() {
+    _fib();
+    // _matrix();
 }
