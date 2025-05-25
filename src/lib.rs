@@ -19,7 +19,7 @@ pub struct Addr(pub usize);
 struct HandlerOptions<'a> {
     proc: &'a mut Process,
     process_table: &'a mut BTreeMap<Pid, Rc<RefCell<Process>>>,
-    run_queue: &'a mut VecDeque<Pid>,
+    run_queue: &'a mut VecDeque<Rc<RefCell<Process>>>,
     modules: &'a BTreeMap<String, Module>,
     next_pid: &'a mut usize,
 }
@@ -183,13 +183,15 @@ fn handle_spawn(ho: HandlerOptions) {
     if function.returns {
         args.insert(0, ho.proc.pid as Word);
     }
-    let new_proc = Process::new(new_pid, Arc::clone(function), &args);
+    let new_proc = Rc::new(RefCell::new(Process::new(
+        new_pid,
+        Arc::clone(function),
+        &args,
+    )));
     ho.proc.regs[dst] = new_pid as i64;
 
-    let new_pid = new_proc.pid;
-    ho.process_table
-        .insert(new_pid, Rc::new(RefCell::new(new_proc)));
-    ho.run_queue.push_back(new_pid);
+    ho.process_table.insert(new_pid, Rc::clone(&new_proc));
+    ho.run_queue.push_back(new_proc);
 }
 
 #[inline(always)]
@@ -233,7 +235,7 @@ fn handle_send(ho: HandlerOptions) {
     if let Some(dst_proc) = ho.process_table.get_mut(&pid) {
         let mut p = dst_proc.borrow_mut();
         p.mailbox.push_back(ho.proc.regs[src_reg]);
-        ho.run_queue.push_back(pid);
+        ho.run_queue.push_back(Rc::clone(dst_proc));
     }
 }
 
@@ -584,7 +586,7 @@ impl Process {
     fn step(
         &mut self,
         process_table: &mut BTreeMap<Pid, Rc<RefCell<Process>>>,
-        run_queue: &mut VecDeque<Pid>,
+        run_queue: &mut VecDeque<Rc<RefCell<Process>>>,
         modules: &BTreeMap<String, Module>,
         next_pid: &mut usize,
     ) {
@@ -670,8 +672,7 @@ pub struct Machine {
     next_pid: usize,
     modules: BTreeMap<String, Module>,
     processes: BTreeMap<Pid, Rc<RefCell<Process>>>,
-    waiting: BTreeMap<Pid, Rc<RefCell<Process>>>,
-    run_queue: VecDeque<Pid>,
+    run_queue: VecDeque<Rc<RefCell<Process>>>,
 }
 
 impl Machine {
@@ -691,63 +692,50 @@ impl Machine {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        let process = Process::new(pid, function, args);
-        self.processes.insert(pid, Rc::new(RefCell::new(process)));
-        self.run_queue.push_back(pid);
+        let process = Rc::new(RefCell::new(Process::new(pid, function, args)));
+
+        self.processes.insert(pid, Rc::clone(&process));
+        self.run_queue.push_back(process);
         Some(pid)
     }
 
     pub fn step(&mut self) {
-        let Some(pid) = self.run_queue.pop_front() else {
-            return;
-        };
-        let Some(proc_rc) = self.processes.get(&pid).cloned() else {
+        let Some(proc_rc) = self.run_queue.pop_front() else {
             return;
         };
 
-        let mut proc = proc_rc.borrow_mut();
+        let state = {
+            let mut proc = proc_rc.borrow_mut();
 
-        proc.step(
-            &mut self.processes,
-            &mut self.run_queue,
-            &self.modules,
-            &mut self.next_pid,
-        );
+            proc.step(
+                &mut self.processes,
+                &mut self.run_queue,
+                &self.modules,
+                &mut self.next_pid,
+            );
 
-        if proc.state == ProcessState::Running {
-            self.run_queue.push_back(pid);
+            proc.state
+        };
+
+        if state == ProcessState::Running {
+            self.run_queue.push_back(proc_rc);
         }
     }
 
     pub fn send(&mut self, pid: Pid, msg: Word) {
-        if let Some(proc) = self.processes.get_mut(&pid) {
-            let mut proc = proc.borrow_mut();
+        if let Some(proc_rc) = self.processes.get_mut(&pid) {
+            let mut proc = proc_rc.borrow_mut();
             proc.mailbox.push_back(msg);
 
-            if matches!(proc.state, ProcessState::Waiting) {
+            if proc.state == ProcessState::Waiting {
                 proc.state = ProcessState::Running;
-                self.run_queue.push_back(pid);
-            }
-        }
-    }
-
-    pub fn wake_if_ready(&mut self, pid: Pid) {
-        if let Some(proc_rc) = self.waiting.remove(&pid) {
-            if !proc_rc.borrow().mailbox.is_empty() {
-                self.processes.insert(pid, Rc::clone(&proc_rc));
-                self.run_queue.push_back(pid);
-            } else {
-                self.waiting.insert(pid, proc_rc);
+                self.run_queue.push_back(Rc::clone(proc_rc));
             }
         }
     }
 
     pub fn run(&mut self) {
-        while let Some(pid) = self.run_queue.pop_front() {
-            let Some(proc_rc) = self.processes.get(&pid).cloned() else {
-                continue;
-            };
-
+        while let Some(proc_rc) = self.run_queue.pop_front() {
             let mut proc = proc_rc.borrow_mut();
 
             loop {
@@ -765,12 +753,12 @@ impl Machine {
 
             match proc.state {
                 ProcessState::Running => {
-                    self.run_queue.push_back(pid);
+                    self.run_queue.push_back(Rc::clone(&proc_rc));
                 }
                 ProcessState::Halted => {
-                    self.processes.remove(&pid);
+                    self.processes.remove(&proc.pid);
                 }
-                ProcessState::Crashed => println!("[PID {}] Crashed", pid),
+                ProcessState::Crashed => println!("[PID {}] Crashed", proc.pid),
                 _ => {}
             }
         }
