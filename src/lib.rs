@@ -11,7 +11,7 @@ pub type Pid = usize;
 const REG_COUNT: usize = 32;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Reg(pub usize);
+pub struct Reg(pub u8);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Addr(pub usize);
@@ -34,7 +34,9 @@ static DISPATCH_TABLE: &[OpHandler] = &[
     handle_sub,
     handle_mul,
     handle_cmp_le,
+    handle_mov,
     handle_jump_if,
+    handle_jump,
     handle_spawn,
     handle_print,
     handle_send,
@@ -136,6 +138,20 @@ fn handle_cmp_le(ho: HandlerOptions) {
 }
 
 #[inline(always)]
+fn handle_mov(ho: HandlerOptions) {
+    let Ok(dst) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
+        return;
+    };
+    let Ok(src) = ho.proc.reg() else {
+        ho.proc.state = ProcessState::Crashed;
+        return;
+    };
+
+    ho.proc.regs[dst] = ho.proc.regs[src] as i64;
+}
+
+#[inline(always)]
 fn handle_jump_if(ho: HandlerOptions) {
     let Ok(cmp) = ho.proc.reg() else {
         ho.proc.state = ProcessState::Crashed;
@@ -149,6 +165,16 @@ fn handle_jump_if(ho: HandlerOptions) {
     if ho.proc.regs[cmp] != 0 {
         ho.proc.ip = target as usize;
     }
+}
+
+#[inline(always)]
+fn handle_jump(ho: HandlerOptions) {
+    let Ok(target) = ho.proc.imm_u32() else {
+        ho.proc.state = ProcessState::Crashed;
+        return;
+    };
+
+    ho.proc.ip = target as usize;
 }
 
 #[inline(always)]
@@ -232,7 +258,7 @@ fn handle_send(ho: HandlerOptions) {
         return;
     };
     let pid = ho.proc.regs[dst_pid] as Pid;
-    if let Some(dst_proc) = ho.process_table.get_mut(&pid) {
+    if let Some(dst_proc) = ho.process_table.get(&pid) {
         let mut p = dst_proc.borrow_mut();
         p.mailbox.push_back(ho.proc.regs[src_reg]);
         ho.run_queue.push_back(Rc::clone(dst_proc));
@@ -267,8 +293,15 @@ pub enum Instruction {
         lhs: Reg,
         rhs: Reg,
     },
+    Mov {
+        dst: Reg,
+        src: Reg,
+    },
     JumpIf {
         cmp: Reg,
+        target: String,
+    },
+    Jump {
         target: String,
     },
     Spawn {
@@ -302,11 +335,13 @@ impl Instruction {
             Instruction::Sub { .. } => 4,
             Instruction::Mul { .. } => 5,
             Instruction::CmpLE { .. } => 6,
-            Instruction::JumpIf { .. } => 7,
-            Instruction::Spawn { .. } => 8,
-            Instruction::Print { .. } => 9,
-            Instruction::Send { .. } => 10,
-            Instruction::Recv { .. } => 11,
+            Instruction::Mov { .. } => 7,
+            Instruction::JumpIf { .. } => 8,
+            Instruction::Jump { .. } => 9,
+            Instruction::Spawn { .. } => 10,
+            Instruction::Print { .. } => 11,
+            Instruction::Send { .. } => 12,
+            Instruction::Recv { .. } => 13,
             Instruction::Label { .. } => panic!("Label has no opcode"),
         }
     }
@@ -317,21 +352,29 @@ impl Instruction {
         match self {
             Instruction::Noop | Instruction::Halt => {}
             Instruction::LoadImm { dst, value } => {
-                bytes.push(dst.0 as u8);
+                bytes.push(dst.0);
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
             Instruction::Add { dst, lhs, rhs }
             | Instruction::Sub { dst, lhs, rhs }
             | Instruction::Mul { dst, lhs, rhs }
             | Instruction::CmpLE { dst, lhs, rhs } => {
-                bytes.push(dst.0 as u8);
-                bytes.push(lhs.0 as u8);
-                bytes.push(rhs.0 as u8);
+                bytes.push(dst.0);
+                bytes.push(lhs.0);
+                bytes.push(rhs.0);
+            }
+            Instruction::Mov { dst, src } => {
+                bytes.push(dst.0);
+                bytes.push(src.0);
             }
             Instruction::JumpIf { cmp, target } => {
-                bytes.push(cmp.0 as u8);
+                bytes.push(cmp.0);
                 bytes.extend_from_slice(&u32::MAX.to_le_bytes());
                 backpatch.push((index, Instruction::JumpIf { cmp, target }));
+            }
+            Instruction::Jump { target } => {
+                bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+                backpatch.push((index, Instruction::Jump { target }));
             }
             Instruction::Spawn {
                 module,
@@ -345,19 +388,19 @@ impl Instruction {
                 bytes.extend_from_slice(function.as_bytes());
                 bytes.extend_from_slice(&(args.len() as u32).to_le_bytes());
                 for arg in args {
-                    bytes.push(arg.0 as u8);
+                    bytes.push(arg.0);
                 }
-                bytes.push(dst.0 as u8);
+                bytes.push(dst.0);
             }
             Instruction::Print { reg } => {
-                bytes.push(reg.0 as u8);
+                bytes.push(reg.0);
             }
             Instruction::Send { dst_pid, src_reg } => {
-                bytes.push(dst_pid.0 as u8);
-                bytes.push(src_reg.0 as u8);
+                bytes.push(dst_pid.0);
+                bytes.push(src_reg.0);
             }
             Instruction::Recv { dst_reg } => {
-                bytes.push(dst_reg.0 as u8);
+                bytes.push(dst_reg.0);
             }
             Instruction::Label { .. } => panic!("Label has no bytes"),
         }
@@ -385,19 +428,26 @@ impl Drop for InstructionBuilder<'_> {
         }
 
         for (instruction_index, instruction) in backpatch {
-            let Instruction::JumpIf {
-                cmp: _,
-                target: name,
-            } = instruction
-            else {
-                panic!("Instruction is not JumpIf");
-            };
-            let Some(target) = labels.get(&name) else {
-                panic!("Label {name} not found");
-            };
-            let bytes = (*target as u32).to_le_bytes();
-            for (i, byte) in bytes.iter().enumerate() {
-                self.bytecode[instruction_index + i + 2] = *byte;
+            match instruction {
+                Instruction::JumpIf { target, .. } => {
+                    let Some(target) = labels.get(&target) else {
+                        panic!("Label {target} not found");
+                    };
+                    let bytes = (*target as u32).to_le_bytes();
+                    for (i, byte) in bytes.iter().enumerate() {
+                        self.bytecode[instruction_index + i + 2] = *byte;
+                    }
+                }
+                Instruction::Jump { target } => {
+                    let Some(target) = labels.get(&target) else {
+                        panic!("Label {target} not found");
+                    };
+                    let bytes = (*target as u32).to_le_bytes();
+                    for (i, byte) in bytes.iter().enumerate() {
+                        self.bytecode[instruction_index + i + 1] = *byte;
+                    }
+                }
+                _ => panic!("Instruction is not JumpIf or Jump"),
             }
         }
     }
@@ -441,9 +491,20 @@ impl<'a> InstructionBuilder<'a> {
         self
     }
 
+    pub fn mov(&mut self, dst: Reg, src: Reg) -> &mut Self {
+        self.instructions.push(Instruction::Mov { dst, src });
+        self
+    }
+
     pub fn jump_if(&mut self, cmp: Reg, target: impl Into<String>) -> &mut Self {
         let target = target.into();
         self.instructions.push(Instruction::JumpIf { cmp, target });
+        self
+    }
+
+    pub fn jump(&mut self, target: impl Into<String>) -> &mut Self {
+        let target = target.into();
+        self.instructions.push(Instruction::Jump { target });
         self
     }
 

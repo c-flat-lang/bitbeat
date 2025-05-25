@@ -112,9 +112,15 @@ impl<'a> Decoder<'a> {
                     );
                 }
                 7 => {
-                    eprint!("JumpIf cmp: {}, target: {}", self.u8(), self.u32());
+                    eprint!("Mov des: {}, src: {}", self.u8(), self.u8());
                 }
                 8 => {
+                    eprint!("JumpIf cmp: {}, target: {}", self.u8(), self.u32());
+                }
+                9 => {
+                    eprint!("Jump target: {}", self.u32());
+                }
+                10 => {
                     eprint!(
                         "Spawn module: {}, function: {}, args: {:?}, dst: {}",
                         self.string(),
@@ -123,13 +129,13 @@ impl<'a> Decoder<'a> {
                         self.u8()
                     );
                 }
-                9 => {
+                11 => {
                     eprint!("Print reg: {}", self.u8());
                 }
-                10 => {
+                12 => {
                     eprint!("Send dst_pid: {}, src_reg: {}", self.u8(), self.u8());
                 }
-                11 => {
+                13 => {
                     eprint!("Recv reg: {}", self.u8());
                 }
                 _ => panic!(),

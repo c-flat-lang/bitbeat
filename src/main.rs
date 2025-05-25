@@ -1,6 +1,58 @@
 use bitbeat::{Function, Machine, Module, Reg};
 
 #[inline(always)]
+fn _loop_fib() {
+    let mut machine = Machine::default();
+    let mut module = Module::new("main");
+
+    // Iterative fib(n): returns fib(n)
+    let mut fib_function = Function::new("fib").arity(1).returns(); // N in Reg(1)
+    fib_function
+        .instructions()
+        .load_imm(Reg(2), 0) // a = 0
+        .load_imm(Reg(3), 1) // b = 1
+        .load_imm(Reg(4), 2) // i = 2
+        .cmp_le(Reg(5), Reg(1), Reg(2)) // if N <= 0
+        .jump_if(Reg(5), "exit_a")
+        .cmp_le(Reg(5), Reg(1), Reg(3)) // if N <= 1
+        .jump_if(Reg(5), "exit_b")
+        .label("loop")
+        .add(Reg(6), Reg(2), Reg(3)) // tmp = a + b
+        .mov(Reg(2), Reg(3)) // a = b
+        .mov(Reg(3), Reg(6)) // b = tmp
+        .load_imm(Reg(6), 1)
+        .add(Reg(4), Reg(4), Reg(6)) // i += 1
+        .cmp_le(Reg(5), Reg(4), Reg(1)) // if i <= N
+        .jump_if(Reg(5), "loop") // continue loop
+        .label("exit_b")
+        .send(Reg(0), Reg(3)) // send b
+        .halt()
+        .label("exit_a")
+        .send(Reg(0), Reg(2)) // send a
+        .halt();
+    module.add_function(fib_function);
+
+    // Main function
+    let mut main_function = Function::new("main");
+    main_function
+        .instructions()
+        .load_imm(Reg(0), 30) // N = 30
+        .spawn("main", "fib", vec![Reg(0)], Reg(1)) // spawn fib(N)
+        .recv(Reg(2)) // recv result
+        .print(Reg(2)) // print result
+        .halt();
+    module.add_function(main_function);
+
+    machine.register_module(module);
+    machine.spawn("main", "main", &[]);
+
+    let start = std::time::Instant::now();
+    machine.run();
+    let seconds = start.elapsed().as_secs_f32();
+    println!("Done in {}", seconds);
+}
+
+#[inline(always)]
 fn _fib() {
     let mut machine = Machine::default();
 
@@ -121,5 +173,6 @@ fn _matrix() {
 
 fn main() {
     _fib();
+    // _loop_fib();
     // _matrix();
 }
