@@ -19,6 +19,7 @@ pub struct Addr(pub usize);
 struct HandlerOptions<'a> {
     proc: &'a mut Process,
     process_table: &'a mut BTreeMap<Pid, Rc<RefCell<Process>>>,
+    haulted: &'a mut Vec<Rc<RefCell<Process>>>,
     run_queue: &'a mut VecDeque<Rc<RefCell<Process>>>,
     modules: &'a BTreeMap<String, Module>,
     next_pid: &'a mut usize,
@@ -209,11 +210,18 @@ fn handle_spawn(ho: HandlerOptions) {
     if function.returns {
         args.insert(0, ho.proc.pid as Word);
     }
-    let new_proc = Rc::new(RefCell::new(Process::new(
-        new_pid,
-        Arc::clone(function),
-        &args,
-    )));
+    let new_proc = if let Some(proc_rc) = ho.haulted.pop() {
+        proc_rc
+            .borrow_mut()
+            .reset(new_pid, Arc::clone(function), &args);
+        proc_rc
+    } else {
+        Rc::new(RefCell::new(Process::new(
+            new_pid,
+            Arc::clone(function),
+            &args,
+        )))
+    };
     ho.proc.regs[dst] = new_pid as i64;
 
     ho.process_table.insert(new_pid, Rc::clone(&new_proc));
@@ -644,9 +652,23 @@ impl Process {
         }
     }
 
+    pub fn reset(&mut self, pid: Pid, function: Arc<Function>, args: &[Word]) {
+        self.regs[..].fill(0);
+        for (i, arg) in args.iter().enumerate() {
+            self.regs[i] = *arg;
+        }
+
+        self.pid = pid;
+        self.ip = 0;
+        self.function = function;
+        self.mailbox.clear();
+        self.state = ProcessState::Running;
+    }
+
     fn step(
         &mut self,
         process_table: &mut BTreeMap<Pid, Rc<RefCell<Process>>>,
+        haulted: &mut Vec<Rc<RefCell<Process>>>,
         run_queue: &mut VecDeque<Rc<RefCell<Process>>>,
         modules: &BTreeMap<String, Module>,
         next_pid: &mut usize,
@@ -662,6 +684,7 @@ impl Process {
         let ho = HandlerOptions {
             proc: self,
             process_table,
+            haulted,
             run_queue,
             modules,
             next_pid,
@@ -733,6 +756,7 @@ pub struct Machine {
     next_pid: usize,
     modules: BTreeMap<String, Module>,
     processes: BTreeMap<Pid, Rc<RefCell<Process>>>,
+    haulted: Vec<Rc<RefCell<Process>>>,
     run_queue: VecDeque<Rc<RefCell<Process>>>,
 }
 
@@ -770,6 +794,7 @@ impl Machine {
 
             proc.step(
                 &mut self.processes,
+                &mut self.haulted,
                 &mut self.run_queue,
                 &self.modules,
                 &mut self.next_pid,
@@ -802,6 +827,7 @@ impl Machine {
             loop {
                 proc.step(
                     &mut self.processes,
+                    &mut self.haulted,
                     &mut self.run_queue,
                     &self.modules,
                     &mut self.next_pid,
@@ -817,7 +843,11 @@ impl Machine {
                     self.run_queue.push_back(Rc::clone(&proc_rc));
                 }
                 ProcessState::Halted => {
-                    self.processes.remove(&proc.pid);
+                    if let Some(proc) = self.processes.remove(&proc.pid) {
+                        if self.haulted.len() < 20 {
+                            self.haulted.push(proc);
+                        }
+                    }
                 }
                 ProcessState::Crashed => println!("[PID {}] Crashed", proc.pid),
                 _ => {}
