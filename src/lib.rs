@@ -1,5 +1,4 @@
 pub mod decoder;
-use anyhow::Result;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
@@ -10,267 +9,18 @@ pub type Pid = usize;
 
 const REG_COUNT: usize = 32;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Reg(pub u8);
 
-#[derive(Clone, Copy, Debug)]
-pub struct Addr(pub usize);
+#[derive(Debug, Clone, Copy)]
+pub struct Address(pub usize);
 
 struct HandlerOptions<'a> {
-    proc: &'a mut Process,
     process_table: &'a mut BTreeMap<Pid, Rc<RefCell<Process>>>,
-    haulted: &'a mut Vec<Rc<RefCell<Process>>>,
+    halted: &'a mut Vec<Rc<RefCell<Process>>>,
     run_queue: &'a mut VecDeque<Rc<RefCell<Process>>>,
     modules: &'a BTreeMap<String, Module>,
     next_pid: &'a mut usize,
-}
-
-type OpHandler = fn(ho: HandlerOptions);
-
-static DISPATCH_TABLE: &[OpHandler] = &[
-    handle_noop,
-    handle_halt,
-    handle_load_imm,
-    handle_add,
-    handle_sub,
-    handle_mul,
-    handle_cmp_le,
-    handle_mov,
-    handle_jump_if,
-    handle_jump,
-    handle_spawn,
-    handle_print,
-    handle_send,
-    handle_recv,
-];
-
-#[inline(always)]
-fn handle_noop(_ho: HandlerOptions) {}
-
-#[inline(always)]
-fn handle_halt(ho: HandlerOptions) {
-    ho.proc.state = ProcessState::Halted;
-}
-
-#[inline(always)]
-fn handle_load_imm(ho: HandlerOptions) {
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(value) = ho.proc.imm_i64() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.regs[dst] = value;
-}
-
-#[inline(always)]
-fn handle_add(ho: HandlerOptions) {
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(lhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(rhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.regs[dst] = ho.proc.regs[lhs] + ho.proc.regs[rhs];
-}
-
-#[inline(always)]
-fn handle_sub(ho: HandlerOptions) {
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(lhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(rhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.regs[dst] = ho.proc.regs[lhs] - ho.proc.regs[rhs];
-}
-
-#[inline(always)]
-fn handle_mul(ho: HandlerOptions) {
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(lhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(rhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.regs[dst] = ho.proc.regs[lhs] * ho.proc.regs[rhs];
-}
-
-#[inline(always)]
-fn handle_cmp_le(ho: HandlerOptions) {
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(lhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(rhs) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.regs[dst] = (ho.proc.regs[lhs] <= ho.proc.regs[rhs]) as i64;
-}
-
-#[inline(always)]
-fn handle_mov(ho: HandlerOptions) {
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(src) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.regs[dst] = ho.proc.regs[src] as i64;
-}
-
-#[inline(always)]
-fn handle_jump_if(ho: HandlerOptions) {
-    let Ok(cmp) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(target) = ho.proc.imm_u32() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    if ho.proc.regs[cmp] != 0 {
-        ho.proc.ip = target as usize;
-    }
-}
-
-#[inline(always)]
-fn handle_jump(ho: HandlerOptions) {
-    let Ok(target) = ho.proc.imm_u32() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    ho.proc.ip = target as usize;
-}
-
-#[inline(always)]
-fn handle_spawn(ho: HandlerOptions) {
-    let Ok(module_name) = ho.proc.string() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(function_name) = ho.proc.string() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(args) = ho.proc.args() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Some(module) = ho.modules.get(module_name.as_str()) else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Some(function) = module.functions.get(function_name.as_str()) else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let new_pid = *ho.next_pid;
-    *ho.next_pid += 1;
-    let mut args: Vec<Word> = args.iter().map(|&arg| ho.proc.regs[arg as usize]).collect();
-    if function.returns {
-        args.insert(0, ho.proc.pid as Word);
-    }
-    let new_proc = if let Some(proc_rc) = ho.haulted.pop() {
-        proc_rc
-            .borrow_mut()
-            .reset(new_pid, Arc::clone(function), &args);
-        proc_rc
-    } else {
-        Rc::new(RefCell::new(Process::new(
-            new_pid,
-            Arc::clone(function),
-            &args,
-        )))
-    };
-    ho.proc.regs[dst] = new_pid as i64;
-
-    ho.process_table.insert(new_pid, Rc::clone(&new_proc));
-    ho.run_queue.push_back(new_proc);
-}
-
-#[inline(always)]
-fn handle_print(ho: HandlerOptions) {
-    let Ok(arg) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    println!("{}", ho.proc.regs[arg]);
-}
-
-#[inline(always)]
-fn handle_recv(ho: HandlerOptions) {
-    let start = ho.proc.ip;
-    let Ok(dst) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-
-    let Some(msg) = ho.proc.mailbox.pop_front() else {
-        ho.proc.ip = start - 1;
-        ho.proc.state = ProcessState::Waiting;
-        return;
-    };
-
-    ho.proc.regs[dst] = msg;
-    ho.proc.state = ProcessState::Running;
-}
-
-#[inline(always)]
-fn handle_send(ho: HandlerOptions) {
-    let Ok(dst_pid) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let Ok(src_reg) = ho.proc.reg() else {
-        ho.proc.state = ProcessState::Crashed;
-        return;
-    };
-    let pid = ho.proc.regs[dst_pid] as Pid;
-    if let Some(dst_proc) = ho.process_table.get(&pid) {
-        let mut p = dst_proc.borrow_mut();
-        p.mailbox.push_back(ho.proc.regs[src_reg]);
-        ho.run_queue.push_back(Rc::clone(dst_proc));
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -307,10 +57,10 @@ pub enum Instruction {
     },
     JumpIf {
         cmp: Reg,
-        target: String,
+        target: Address,
     },
     Jump {
-        target: String,
+        target: Address,
     },
     Spawn {
         module: Box<String>,
@@ -328,144 +78,40 @@ pub enum Instruction {
     Recv {
         dst_reg: Reg,
     },
-    Label {
-        name: String,
-    },
-}
-
-impl Instruction {
-    pub fn opcode(&self) -> u8 {
-        match self {
-            Instruction::Noop => 0,
-            Instruction::Halt => 1,
-            Instruction::LoadImm { .. } => 2,
-            Instruction::Add { .. } => 3,
-            Instruction::Sub { .. } => 4,
-            Instruction::Mul { .. } => 5,
-            Instruction::CmpLE { .. } => 6,
-            Instruction::Mov { .. } => 7,
-            Instruction::JumpIf { .. } => 8,
-            Instruction::Jump { .. } => 9,
-            Instruction::Spawn { .. } => 10,
-            Instruction::Print { .. } => 11,
-            Instruction::Send { .. } => 12,
-            Instruction::Recv { .. } => 13,
-            Instruction::Label { .. } => panic!("Label has no opcode"),
-        }
-    }
-
-    pub fn into_bytes(self, index: usize, backpatch: &mut Vec<(usize, Instruction)>) -> Vec<u8> {
-        let opcode = self.opcode();
-        let mut bytes = vec![opcode];
-        match self {
-            Instruction::Noop | Instruction::Halt => {}
-            Instruction::LoadImm { dst, value } => {
-                bytes.push(dst.0);
-                bytes.extend_from_slice(&value.to_le_bytes());
-            }
-            Instruction::Add { dst, lhs, rhs }
-            | Instruction::Sub { dst, lhs, rhs }
-            | Instruction::Mul { dst, lhs, rhs }
-            | Instruction::CmpLE { dst, lhs, rhs } => {
-                bytes.push(dst.0);
-                bytes.push(lhs.0);
-                bytes.push(rhs.0);
-            }
-            Instruction::Mov { dst, src } => {
-                bytes.push(dst.0);
-                bytes.push(src.0);
-            }
-            Instruction::JumpIf { cmp, target } => {
-                bytes.push(cmp.0);
-                bytes.extend_from_slice(&u32::MAX.to_le_bytes());
-                backpatch.push((index, Instruction::JumpIf { cmp, target }));
-            }
-            Instruction::Jump { target } => {
-                bytes.extend_from_slice(&u32::MAX.to_le_bytes());
-                backpatch.push((index, Instruction::Jump { target }));
-            }
-            Instruction::Spawn {
-                module,
-                function,
-                args,
-                dst,
-            } => {
-                bytes.extend_from_slice(&(module.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(module.as_bytes());
-                bytes.extend_from_slice(&(function.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(function.as_bytes());
-                bytes.extend_from_slice(&(args.len() as u32).to_le_bytes());
-                for arg in args {
-                    bytes.push(arg.0);
-                }
-                bytes.push(dst.0);
-            }
-            Instruction::Print { reg } => {
-                bytes.push(reg.0);
-            }
-            Instruction::Send { dst_pid, src_reg } => {
-                bytes.push(dst_pid.0);
-                bytes.push(src_reg.0);
-            }
-            Instruction::Recv { dst_reg } => {
-                bytes.push(dst_reg.0);
-            }
-            Instruction::Label { .. } => panic!("Label has no bytes"),
-        }
-        bytes
-    }
 }
 
 pub struct InstructionBuilder<'a> {
-    bytecode: &'a mut Vec<u8>,
-    instructions: Vec<Instruction>,
+    instructions: &'a mut Vec<Instruction>,
+    labels: std::collections::BTreeMap<String, usize>,
+    backpatch: Vec<(usize, String)>,
 }
 
 impl Drop for InstructionBuilder<'_> {
     fn drop(&mut self) {
-        let instructions = std::mem::take(&mut self.instructions);
-        let mut labels = std::collections::BTreeMap::new();
-        let mut backpatch = Vec::new();
-        for instruction in instructions {
-            if let Instruction::Label { name } = instruction {
-                labels.insert(name, self.bytecode.len());
-                continue;
-            }
-            self.bytecode
-                .extend_from_slice(&instruction.into_bytes(self.bytecode.len(), &mut backpatch));
-        }
-
-        for (instruction_index, instruction) in backpatch {
-            match instruction {
-                Instruction::JumpIf { target, .. } => {
-                    let Some(target) = labels.get(&target) else {
-                        panic!("Label {target} not found");
-                    };
-                    let bytes = (*target as u32).to_le_bytes();
-                    for (i, byte) in bytes.iter().enumerate() {
-                        self.bytecode[instruction_index + i + 2] = *byte;
-                    }
-                }
-                Instruction::Jump { target } => {
-                    let Some(target) = labels.get(&target) else {
-                        panic!("Label {target} not found");
-                    };
-                    let bytes = (*target as u32).to_le_bytes();
-                    for (i, byte) in bytes.iter().enumerate() {
-                        self.bytecode[instruction_index + i + 1] = *byte;
-                    }
-                }
-                _ => panic!("Instruction is not JumpIf or Jump"),
-            }
+        for (i, target) in self.backpatch.iter() {
+            let Some(index) = self.labels.get(target) else {
+                panic!("label {target} not found");
+            };
+            self.instructions[*i] = match self.instructions[*i] {
+                Instruction::JumpIf { cmp, .. } => Instruction::JumpIf {
+                    cmp,
+                    target: Address(*index),
+                },
+                Instruction::Jump { .. } => Instruction::Jump {
+                    target: Address(*index),
+                },
+                _ => unreachable!(),
+            };
         }
     }
 }
 
 impl<'a> InstructionBuilder<'a> {
-    pub fn new(bytecode: &'a mut Vec<u8>) -> Self {
+    pub fn new(instructions: &'a mut Vec<Instruction>) -> Self {
         Self {
-            instructions: Vec::new(),
-            bytecode,
+            instructions,
+            labels: BTreeMap::new(),
+            backpatch: Vec::new(),
         }
     }
 
@@ -506,13 +152,20 @@ impl<'a> InstructionBuilder<'a> {
 
     pub fn jump_if(&mut self, cmp: Reg, target: impl Into<String>) -> &mut Self {
         let target = target.into();
-        self.instructions.push(Instruction::JumpIf { cmp, target });
+        self.backpatch.push((self.instructions.len(), target));
+        self.instructions.push(Instruction::JumpIf {
+            cmp,
+            target: Address(usize::MAX),
+        });
         self
     }
 
     pub fn jump(&mut self, target: impl Into<String>) -> &mut Self {
         let target = target.into();
-        self.instructions.push(Instruction::Jump { target });
+        self.backpatch.push((self.instructions.len(), target));
+        self.instructions.push(Instruction::Jump {
+            target: Address(usize::MAX),
+        });
         self
     }
 
@@ -554,8 +207,7 @@ impl<'a> InstructionBuilder<'a> {
     }
 
     pub fn label(&mut self, name: impl Into<String>) -> &mut Self {
-        self.instructions
-            .push(Instruction::Label { name: name.into() });
+        self.labels.insert(name.into(), self.instructions.len());
         self
     }
 }
@@ -565,7 +217,7 @@ enum ProcessState {
     Running,
     Halted,
     Waiting,
-    Crashed,
+    Crashed(&'static str),
 }
 
 #[derive(Debug)]
@@ -596,7 +248,7 @@ impl Module {
 pub struct Function {
     name: String,
     arity: usize,
-    code: Vec<u8>,
+    code: Vec<Instruction>,
     returns: bool,
 }
 
@@ -668,86 +320,143 @@ impl Process {
     fn step(
         &mut self,
         process_table: &mut BTreeMap<Pid, Rc<RefCell<Process>>>,
-        haulted: &mut Vec<Rc<RefCell<Process>>>,
+        halted: &mut Vec<Rc<RefCell<Process>>>,
         run_queue: &mut VecDeque<Rc<RefCell<Process>>>,
         modules: &BTreeMap<String, Module>,
         next_pid: &mut usize,
     ) {
         if self.ip >= self.function.code.len()
-            || matches!(self.state, ProcessState::Halted | ProcessState::Crashed)
+            || matches!(self.state, ProcessState::Halted | ProcessState::Crashed(..))
         {
             self.state = ProcessState::Halted;
             return;
         }
 
-        let opcode = self.opcode();
-        let ho = HandlerOptions {
-            proc: self,
-            process_table,
-            haulted,
-            run_queue,
-            modules,
-            next_pid,
-        };
-        DISPATCH_TABLE[opcode](ho);
-    }
-
-    #[inline(always)]
-    fn opcode(&mut self) -> usize {
-        let opcode = &self.function.code[self.ip];
-        self.ip += 1;
-        *opcode as usize
-    }
-
-    #[inline(always)]
-    fn reg(&mut self) -> Result<usize> {
-        if self.ip >= self.function.code.len() {
-            anyhow::bail!("UnexpectedEOF".to_string());
-        }
         let ip = self.ip;
         self.ip += 1;
-        Ok(self.function.code[ip] as usize)
-    }
 
-    #[inline(always)]
-    fn imm_u32(&mut self) -> Result<u32> {
-        let bytes = self.get_n_bytes(4)?;
-        Ok(u32::from_le_bytes(bytes.try_into()?))
-    }
+        match &self.function.code[ip] {
+            Instruction::Noop => {}
+            Instruction::Halt => self.state = ProcessState::Halted,
+            Instruction::LoadImm { dst, value } => self.regs[dst.0 as usize] = *value,
+            Instruction::Add { dst, lhs, rhs } => self.handle_add(*dst, *lhs, *rhs),
+            Instruction::Sub { dst, lhs, rhs } => self.handle_sub(*dst, *lhs, *rhs),
+            Instruction::Mul { dst, lhs, rhs } => self.handle_mul(*dst, *lhs, *rhs),
+            Instruction::CmpLE { dst, lhs, rhs } => self.handle_cmp_le(*dst, *lhs, *rhs),
+            Instruction::Mov { dst, src } => self.handle_mov(*dst, *src),
+            Instruction::JumpIf { cmp, target } => self.handle_jump_if(*cmp, *target),
+            Instruction::Jump { target } => self.handle_jump(*target),
+            Instruction::Spawn {
+                module,
+                function,
+                args,
+                dst,
+            } => {
+                let Some(module) = modules.get(module.as_str()) else {
+                    self.state =
+                        ProcessState::Crashed("failed to spawn process due to missing module");
+                    return;
+                };
+                let Some(function) = module.get_function(function) else {
+                    self.state =
+                        ProcessState::Crashed("failed to spawn process due to missing function");
+                    return;
+                };
 
-    #[inline(always)]
-    fn imm_i64(&mut self) -> Result<i64> {
-        let bytes = self.get_n_bytes(8)?;
-        Ok(i64::from_le_bytes(bytes.try_into()?))
-    }
+                let new_pid = *next_pid;
+                *next_pid += 1;
+                let mut args: Vec<Word> =
+                    args.iter().map(|&arg| self.regs[arg.0 as usize]).collect();
+                if function.returns {
+                    args.insert(0, self.pid as Word);
+                }
+                let new_proc = if let Some(proc_rc) = halted.pop() {
+                    proc_rc
+                        .borrow_mut()
+                        .reset(new_pid, Arc::clone(&function), &args);
+                    proc_rc
+                } else {
+                    Rc::new(RefCell::new(Process::new(
+                        new_pid,
+                        Arc::clone(&function),
+                        &args,
+                    )))
+                };
+                self.regs[dst.0 as usize] = new_pid as i64;
 
-    #[inline(always)]
-    fn get_n_bytes(&mut self, n: usize) -> Result<&[u8]> {
-        if self.ip + n > self.function.code.len() {
-            anyhow::bail!("UnexpectedEOF".to_string());
+                process_table.insert(new_pid, Rc::clone(&new_proc));
+                run_queue.push_back(new_proc);
+            }
+            Instruction::Print { reg } => self.handle_print(*reg),
+            Instruction::Send { dst_pid, src_reg } => {
+                self.handle_send(process_table, run_queue, *dst_pid, *src_reg)
+            }
+            Instruction::Recv { dst_reg } => self.handle_recv(*dst_reg),
         }
-        let slice = &self.function.code[self.ip..self.ip + n];
-        self.ip += n;
-        Ok(slice)
     }
 
-    #[inline(always)]
-    fn string(&mut self) -> Result<String> {
-        let len = self.imm_u32()? as usize;
-        let bytes = self.function.code[self.ip..self.ip + len].to_vec();
-        self.ip += len;
-        match String::from_utf8(bytes) {
-            Ok(string) => Ok(string),
-            Err(err) => panic!("{}", err),
+    fn handle_add(&mut self, dst: Reg, lhs: Reg, rhs: Reg) {
+        self.regs[dst.0 as usize] = self.regs[lhs.0 as usize] + self.regs[rhs.0 as usize];
+    }
+
+    fn handle_sub(&mut self, dst: Reg, lhs: Reg, rhs: Reg) {
+        self.regs[dst.0 as usize] = self.regs[lhs.0 as usize] - self.regs[rhs.0 as usize];
+    }
+
+    fn handle_mul(&mut self, dst: Reg, lhs: Reg, rhs: Reg) {
+        self.regs[dst.0 as usize] = self.regs[lhs.0 as usize] * self.regs[rhs.0 as usize];
+    }
+
+    fn handle_cmp_le(&mut self, dst: Reg, lhs: Reg, rhs: Reg) {
+        self.regs[dst.0 as usize] = (self.regs[lhs.0 as usize] <= self.regs[rhs.0 as usize]) as i64;
+    }
+
+    fn handle_mov(&mut self, dst: Reg, src: Reg) {
+        self.regs[dst.0 as usize] = self.regs[src.0 as usize];
+    }
+
+    fn handle_jump_if(&mut self, cmp: Reg, target: Address) {
+        if self.regs[cmp.0 as usize] == 0 {
+            return;
         }
+        self.ip = target.0;
     }
 
-    #[inline(always)]
-    fn args(&mut self) -> Result<Vec<u8>> {
-        let len = self.imm_u32()? as usize;
-        let bytes = self.function.code[self.ip..self.ip + len].to_vec();
-        self.ip += len;
-        Ok(bytes)
+    fn handle_jump(&mut self, target: Address) {
+        self.ip = target.0;
+    }
+
+    fn handle_print(&mut self, reg: Reg) {
+        println!("{}", self.regs[reg.0 as usize]);
+    }
+
+    fn handle_send(
+        &mut self,
+        process_table: &mut BTreeMap<Pid, Rc<RefCell<Process>>>,
+        run_queue: &mut VecDeque<Rc<RefCell<Process>>>,
+        dst_pid: Reg,
+        src_reg: Reg,
+    ) {
+        let pid = self.regs[dst_pid.0 as usize] as Pid;
+        let Some(dst_proc) = process_table.get(&pid) else {
+            self.state =
+                ProcessState::Crashed("failed to SEND data to PID due to failed to find it");
+            return;
+        };
+        let mut p = dst_proc.borrow_mut();
+        p.mailbox.push_back(self.regs[src_reg.0 as usize]);
+        run_queue.push_back(Rc::clone(dst_proc));
+    }
+
+    fn handle_recv(&mut self, dst_reg: Reg) {
+        let Some(msg) = self.mailbox.pop_front() else {
+            self.state = ProcessState::Waiting;
+            self.ip -= 1;
+            return;
+        };
+
+        self.regs[dst_reg.0 as usize] = msg;
+        self.state = ProcessState::Running;
     }
 }
 
@@ -756,7 +465,7 @@ pub struct Machine {
     next_pid: usize,
     modules: BTreeMap<String, Module>,
     processes: BTreeMap<Pid, Rc<RefCell<Process>>>,
-    haulted: Vec<Rc<RefCell<Process>>>,
+    halted: Vec<Rc<RefCell<Process>>>,
     run_queue: VecDeque<Rc<RefCell<Process>>>,
 }
 
@@ -794,7 +503,7 @@ impl Machine {
 
             proc.step(
                 &mut self.processes,
-                &mut self.haulted,
+                &mut self.halted,
                 &mut self.run_queue,
                 &self.modules,
                 &mut self.next_pid,
@@ -827,7 +536,7 @@ impl Machine {
             loop {
                 proc.step(
                     &mut self.processes,
-                    &mut self.haulted,
+                    &mut self.halted,
                     &mut self.run_queue,
                     &self.modules,
                     &mut self.next_pid,
@@ -844,194 +553,14 @@ impl Machine {
                 }
                 ProcessState::Halted => {
                     if let Some(proc) = self.processes.remove(&proc.pid) {
-                        if self.haulted.len() < 20 {
-                            self.haulted.push(proc);
+                        if self.halted.len() < 10 {
+                            self.halted.push(proc);
                         }
                     }
                 }
-                ProcessState::Crashed => println!("[PID {}] Crashed", proc.pid),
+                ProcessState::Crashed(msg) => println!("[PID {}] Crashed:\n{msg}", proc.pid),
                 _ => {}
             }
         }
     }
-}
-
-#[test]
-fn bytecode_noop() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.noop();
-    }
-
-    assert_eq!(code.len(), 1);
-    assert_eq!(code[0], 0);
-}
-
-#[test]
-fn bytecode_halt() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.halt();
-    }
-
-    assert_eq!(code.len(), 1);
-    assert_eq!(code[0], 1);
-}
-
-#[test]
-fn bytecode_load_imm() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.load_imm(Reg(10), 123);
-    }
-
-    assert_eq!(code.len(), 10);
-    assert_eq!(code[0], 2);
-    assert_eq!(code[1], 10);
-    assert_eq!(code[2], 123);
-    assert_eq!(code[3], 0);
-    assert_eq!(code[4], 0);
-    assert_eq!(code[5], 0);
-    assert_eq!(code[6], 0);
-    assert_eq!(code[7], 0);
-    assert_eq!(code[8], 0);
-    assert_eq!(code[9], 0);
-}
-
-#[test]
-fn bytecode_add() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.add(Reg(10), Reg(2), Reg(3));
-    }
-
-    assert_eq!(code.len(), 4);
-    assert_eq!(code[0], 3); // opcode
-    assert_eq!(code[1], 10); // dest
-    assert_eq!(code[2], 2); // lhs
-    assert_eq!(code[3], 3); // rhs
-}
-
-#[test]
-fn bytecode_sub() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.sub(Reg(10), Reg(2), Reg(3));
-    }
-
-    assert_eq!(code.len(), 4);
-    assert_eq!(code[0], 4); // opcode
-    assert_eq!(code[1], 10); // dest
-    assert_eq!(code[2], 2); // lhs
-    assert_eq!(code[3], 3); // rhs
-}
-
-#[test]
-fn bytecode_cmp_le() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.cmp_le(Reg(10), Reg(2), Reg(3));
-    }
-
-    assert_eq!(code.len(), 4);
-    assert_eq!(code[0], 5); // opcode
-    assert_eq!(code[1], 10); // dest
-    assert_eq!(code[2], 2); // lhs
-    assert_eq!(code[3], 3); // rhs
-}
-
-#[test]
-fn bytecode_jump_if() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.jump_if(Reg(10), "main").label("main");
-    }
-
-    assert_eq!(code.len(), 6);
-    assert_eq!(code[0], 6); // opcode
-    assert_eq!(code[1], 10); // cmp
-    assert_eq!(code[2], 6); // target
-    assert_eq!(code[3], 0);
-    assert_eq!(code[4], 0);
-    assert_eq!(code[5], 0);
-}
-
-#[test]
-fn bytecode_spawn() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.spawn("main", "main", vec![], Reg(10));
-    }
-
-    assert_eq!(code.len(), 0x16);
-    assert_eq!(code[0], 0x7);
-    assert_eq!(code[1], 0x4);
-    assert_eq!(code[2], 0x0);
-    assert_eq!(code[3], 0x0);
-    assert_eq!(code[4], 0x0);
-    assert_eq!(code[5], 0x6d);
-    assert_eq!(code[6], 0x61);
-    assert_eq!(code[7], 0x69);
-    assert_eq!(code[8], 0x6e);
-    assert_eq!(code[9], 0x4);
-    assert_eq!(code[10], 0x0);
-    assert_eq!(code[11], 0x0);
-    assert_eq!(code[12], 0x0);
-    assert_eq!(code[13], 0x6d);
-    assert_eq!(code[14], 0x61);
-    assert_eq!(code[15], 0x69);
-    assert_eq!(code[16], 0x6e);
-    assert_eq!(code[17], 0x0);
-    assert_eq!(code[18], 0x0);
-    assert_eq!(code[19], 0x0);
-    assert_eq!(code[20], 0x0);
-    assert_eq!(code[21], 0xa);
-}
-
-#[test]
-fn bytecode_print() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.print(Reg(10));
-    }
-
-    assert_eq!(code.len(), 2);
-    assert_eq!(code[0], 8); // opcode
-    assert_eq!(code[1], 10); // reg
-}
-
-#[test]
-fn bytecode_send() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.send(Reg(200), Reg(10));
-    }
-
-    assert_eq!(code.len(), 3);
-    assert_eq!(code[0], 9); // opcode
-    assert_eq!(code[1], 200); // reg for pid
-    assert_eq!(code[2], 10); // data reg
-}
-
-#[test]
-fn bytecode_recv() {
-    let mut code = Vec::new();
-    {
-        let mut assembler = InstructionBuilder::new(&mut code);
-        assembler.recv(Reg(200));
-    }
-
-    assert_eq!(code.len(), 2);
-    assert_eq!(code[0], 10); // opcode
-    assert_eq!(code[1], 200); // reg
 }
